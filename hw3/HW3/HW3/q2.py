@@ -35,34 +35,34 @@ avg_prices_train = avg_prices[random_indices]
 id_train = id[random_indices]
 
 # 2c - kernel funtion = radial basis
-# gp = GaussianProcess(id_train.reshape(-1, 1), avg_prices_train.reshape(-1, 1), kernel_func=radial_basis)
+gp = GaussianProcess(id_train.reshape(-1, 1), avg_prices_train.reshape(-1, 1), kernel_func=radial_basis)
 
-# mu, Sigma = gp.compute_posterior(id.reshape(-1, 1))
+mu, Sigma = gp.compute_posterior(id.reshape(-1, 1))
 
-# fig, ax = plt.subplots(1, figsize=(15, 15))
+fig, ax = plt.subplots(1, figsize=(15, 15))
 
-# ax = plot_GP(mu, Sigma, id, ax)
-# ax.plot(id, avg_prices, label='avg')
-# ax.plot(id, max_prices, label='max')
-# ax.plot(id, min_prices, label='min')
+ax = plot_GP(mu, Sigma, id, ax)
+ax.plot(id, avg_prices, label='avg')
+ax.plot(id, max_prices, label='max')
+ax.plot(id, min_prices, label='min')
 
-# ax.legend()
-# plt.show()
+ax.legend()
+plt.show()
 
-## 2d kernal function = exponential_sine_squared (for periodic data)
-# gp = GaussianProcess(id_train.reshape(-1, 1), avg_prices_train.reshape(-1, 1), kernel_func=exponential_sine_squared)
+# 2d kernal function = exponential_sine_squared (for periodic data)
+gp = GaussianProcess(id_train.reshape(-1, 1), avg_prices_train.reshape(-1, 1), kernel_func=exponential_sine_squared)
 
-# mu, Sigma = gp.compute_posterior(id.reshape(-1, 1))
+mu, Sigma = gp.compute_posterior(id.reshape(-1, 1))
 
-# fig, ax = plt.subplots(1, figsize=(15, 15))
+fig, ax = plt.subplots(1, figsize=(15, 15))
 
-# ax = plot_GP(mu, Sigma, id, ax)
-# ax.plot(id, avg_prices, label='avg')
-# ax.plot(id, max_prices, label='max')
-# ax.plot(id, min_prices, label='min')
+ax = plot_GP(mu, Sigma, id, ax)
+ax.plot(id, avg_prices, label='avg')
+ax.plot(id, max_prices, label='max')
+ax.plot(id, min_prices, label='min')
 
-# ax.legend()
-# plt.show()
+ax.legend()
+plt.show()
 
 ## 2e kernel function = combine radial basis and exp (2(c) * 2(d))
 gp = GaussianProcess(id_train.reshape(-1, 1), avg_prices_train.reshape(-1, 1), kernel_func=combined_kernel)
