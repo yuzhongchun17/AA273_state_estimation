@@ -66,9 +66,7 @@ class GaussianProcess():
         # print("μy shape:",μy.shape)
         # print("Σyy_ shape:",Σyy_.shape)
         # print("Σy_^-1 shape:",np.linalg.inv(Σy_).shape)
-        # print(self.)
-        # check if they are all PDE
-        # print("Σyy_",Σyy_,"Σy_",Σy_, "Σy",Σy)
+    
         μ2 = μy + Σyy_ @ np.linalg.inv(Σy_) @ (self.Y1 - μy_) # (Mx1) + (MxN)(NxN)
 
         # Compute the posterior covariance
@@ -107,7 +105,7 @@ def plot_GP(mu, Sigma, X, ax):
 ###### KERNELS ######
 
 # Question 2c
-def radial_basis(X1, X2, sig=1., l=.1):
+def radial_basis(X1, X2, sig=2.0, l=.1):
     # Implement the radial basis kernel, given two data matrices X1 and X2
     ### STUDENT CODE BEGINS ###
 
@@ -130,7 +128,7 @@ def radial_basis(X1, X2, sig=1., l=.1):
     return rbf_kernel
 
 # Question 2d
-def exponential_sine_squared(X1, X2, sig=1., l=.05, p=1.):
+def exponential_sine_squared(X1, X2, sig=2.0, l=.05, p=1.):
     # Implement the exponential sine squared kernel, given two data matrices X1 and X2
     ### STUDENT CODE BEGINS ###
 
