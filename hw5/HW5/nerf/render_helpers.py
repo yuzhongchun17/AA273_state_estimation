@@ -8,6 +8,16 @@ img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
+# convention helper
+def opengl_to_opencv(pose_gl):
+    transform = np.array([[1,0,0],
+                        [0,-1,0],
+                        [0,0,-1]])
+    Rc_cv = pose_gl[:3,:3] @ transform
+    center = pose_gl[:3,3].reshape(3,1)
+    pose_cv = np.hstack([Rc_cv, center])# the translation stays the same, since both opengl and opencv are represented in world frame
+    return pose_cv
+
 def get_rays(H, W, K, c2w):
     """Takes camera calibration and pose to output ray origins and directions.
     Args:
@@ -22,16 +32,18 @@ def get_rays(H, W, K, c2w):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Ensure K and c2w are torch.Tensors and move them to GPU if not already
+    # Ensure K and c2w are torch.Tensors and move them to GPU
     K = K if isinstance(K, torch.Tensor) else torch.from_numpy(K).float()
     c2w = c2w if isinstance(c2w, torch.Tensor) else torch.from_numpy(c2w).float()
-
     K = K.to(device)
     c2w = c2w.to(device)
 
-    # Extract camera origin and rotation from the camera-to-world transformation matrix
-    center_cam = c2w[:3, 3].view(3, 1).to(device)  # Camera origin in world frame, shape (3, 1)
-    Rc = c2w[:3, :3].to(device)  # Camera rotation in world frame, shape (3, 3)
+    # opengl to opencv (why?)
+    c2w_cv = torch.from_numpy(opengl_to_opencv(c2w.cpu().numpy())).float().to(device)
+
+    # Extract camera origin (c) and rotation (Rc) from the camera-to-world transformation matrix (camera pose)
+    center_cam = c2w_cv[:3, 3].view(3, 1).to(device)  # Camera origin in world frame, shape (3, 1)
+    Rc = c2w_cv[:3, :3].to(device)  # Camera rotation in world frame, shape (3, 3)
 
     # Obtain uv coordinates for the entire image (homogeneous)
     u, v = torch.meshgrid(torch.arange(W, device=device), torch.arange(H, device=device), indexing='xy')  # H x W
@@ -42,15 +54,11 @@ def get_rays(H, W, K, c2w):
 
     # Inverse of the camera intrinsic matrix
     K_inv = torch.inverse(K).to(device)
-
-    # Transform pixel coordinates to camera coordinates
-    uv_cam = (K_inv @ uv_coord.T).T  # (HxW, 3)
-
-    # Rotate ray directions from camera frame to the world frame
-    rays_d = (Rc @ uv_cam.T).T  # (HxW, 3)
+    uv_cam = (K_inv @ uv_coord.T).T  # (HxW, 3) # pixel 2d to camera 3d
+    rays_d = (Rc @ uv_cam.T).T  # (HxW, 3) rotate ray direction: camera 3d -> world 3d 
     # rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True) # normalize if needed for better result
     
-    # Repeat the camera origin for each ray (broadcasting)
+    # braodcasting the camera origin for each ray
     rays_o = center_cam.T.expand(H * W, -1)  # (HxW, 3)
 
     # Reshape to image dimensions
@@ -80,7 +88,7 @@ def raw2outputs(raw, z_vals, rays_d):
     # Extract RGB values and apply sigmoid activation
     rgb = torch.sigmoid(raw[..., :3])  # [num_rays, num_samples, 3]
 
-    # Calculate the distance between sample points
+    # Calculate the distance between sample points (add ver large num at the end of the ray)
     dists = z_vals[:, 1:] - z_vals[:, :-1]
     dists = torch.cat([dists, 1e10 * torch.ones_like(dists[:, :1])], dim=-1)  # [N_rays, N_samples]
 
@@ -88,20 +96,20 @@ def raw2outputs(raw, z_vals, rays_d):
     ray_d_norms = torch.norm(rays_d, dim=-1, keepdim=True)  # [num_rays, 1]
     dists = dists * ray_d_norms  # [num_rays, num_samples]
 
-    # Extract density (sigma) from raw predictions and add noise if specified
+    # Extract density (sigma) from raw predictions 
     density = raw[..., 3]  # [num_rays, num_samples]
 
     # Calculate the alpha value for each sample point
     alpha = raw2alpha(density, dists)  # [num_rays, num_samples]
 
-    # Compute weights using cumulative product
-    T = torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device=alpha.device), 1. - alpha + 1e-10], dim=-1), dim=-1)[:, :-1]
+    # Compute weights
+    T = torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device=alpha.device), 1. - alpha + 1e-10], dim=-1), dim=-1)[:, :-1] # cumulative product
     weights = alpha * T  # [num_rays, num_samples]
 
-    # Calculate the expected color for each ray
+    # Calculate the expected color for each ray (rgb map)
     rgb_map = torch.sum(weights[..., None] * rgb, dim=-2)  # [num_rays, 3]
 
-    # Calculate the expected depth for each ray
+    # Calculate the expected depth for each ray (depth map)
     depth_map = torch.sum(weights * z_vals, dim=-1)  # [num_rays]
 
     return rgb_map, depth_map, weights
