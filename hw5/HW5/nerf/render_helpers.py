@@ -8,60 +8,101 @@ img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
-# Ray helpers
 def get_rays(H, W, K, c2w):
     """Takes camera calibration and pose to output ray origins and directions.
     Args:
-        H: scalar. Number of pixels in height.
-        W: scalar. Number of pixels in width.
-        K: [3, 3]. Camera calibration matrix.
-        c2w: [3, 4]. Camera frame to world frame pose matrix.
-    Returns:
-        rays_o: [H, W, 3]. Ray origins.
-        rays_d: [H, W, 3]. Ray directions.
-    """
+        H (int): Number of pixels in height.
+        W (int): Number of pixels in width.
+        K (torch.Tensor): Camera calibration matrix of shape [3, 3].
+        c2w (torch.Tensor): Camera to world transformation matrix of shape [3, 4].
 
-    # Hint: Using torch meshgrid and stack is very helpful here.
+    Returns:
+        torch.Tensor: Ray origins of shape [H, W, 3].
+        torch.Tensor: Ray directions of shape [H, W, 3].
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Ensure K and c2w are torch.Tensors and move them to GPU if not already
+    K = K if isinstance(K, torch.Tensor) else torch.from_numpy(K).float()
+    c2w = c2w if isinstance(c2w, torch.Tensor) else torch.from_numpy(c2w).float()
+
+    K = K.to(device)
+    c2w = c2w.to(device)
+
+    # Extract camera origin and rotation from the camera-to-world transformation matrix
+    center_cam = c2w[:3, 3].view(3, 1).to(device)  # Camera origin in world frame, shape (3, 1)
+    Rc = c2w[:3, :3].to(device)  # Camera rotation in world frame, shape (3, 3)
+
+    # Obtain uv coordinates for the entire image (homogeneous)
+    u, v = torch.meshgrid(torch.arange(W, device=device), torch.arange(H, device=device), indexing='xy')  # H x W
+    u = u.flatten().float()  # (HxW,)
+    v = v.flatten().float()  # (HxW,)
+    ones = torch.ones_like(u, device=device)  # Ensure ones are on the same device
+    uv_coord = torch.stack([u, v, ones], dim=1).to(device)  # (HxW, 3)
+
+    # Inverse of the camera intrinsic matrix
+    K_inv = torch.inverse(K).to(device)
+
+    # Transform pixel coordinates to camera coordinates
+    uv_cam = (K_inv @ uv_coord.T).T  # (HxW, 3)
 
     # Rotate ray directions from camera frame to the world frame
-    rays_d = ...
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = ...
+    rays_d = (Rc @ uv_cam.T).T  # (HxW, 3)
+    # rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True) # normalize if needed for better result
+    
+    # Repeat the camera origin for each ray (broadcasting)
+    rays_o = center_cam.T.expand(H * W, -1)  # (HxW, 3)
+
+    # Reshape to image dimensions
+    rays_o = rays_o.view(H, W, 3)
+    rays_d = rays_d.view(H, W, 3)
 
     return rays_o, rays_d
 
 def raw2outputs(raw, z_vals, rays_d):
-    """Transforms model's predictions to semantically meaningful values.
+    """
+    Transforms model's predictions to semantically meaningful values.
+
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model. RGB color and density.
         z_vals: [num_rays, num_samples along ray]. Sample points along ray.
         rays_d: [num_rays, 3]. Direction of each ray.
+
     Returns:
         rgb_map: [num_rays, 3]. Estimated RGB color of a ray.
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
+    
     # Function to calculate alpha from density channel of neural network. alpha = 1 - exp(-density * dist)
-    raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
-    rgb = torch.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
+    raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw) * dists)
+    
+    # Extract RGB values and apply sigmoid activation
+    rgb = torch.sigmoid(raw[..., :3])  # [num_rays, num_samples, 3]
 
     # Calculate the distance between sample points
-
-    # You need to add a very large number at the end of each ray to make sure the last sample point is not ignored. dists is [N_rays, N_samples]
+    dists = z_vals[:, 1:] - z_vals[:, :-1]
+    dists = torch.cat([dists, 1e10 * torch.ones_like(dists[:, :1])], dim=-1)  # [N_rays, N_samples]
 
     # Multiply the distance by the norm of the ray direction to get the real distance in the world space
+    ray_d_norms = torch.norm(rays_d, dim=-1, keepdim=True)  # [num_rays, 1]
+    dists = dists * ray_d_norms  # [num_rays, num_samples]
 
-    # Calculate the alpha value for each sample point. alpha is [N_rays, N_samples]
+    # Extract density (sigma) from raw predictions and add noise if specified
+    density = raw[..., 3]  # [num_rays, num_samples]
 
-    # Calculate the weights for each sample point. weights is [N_rays, N_samples]. It is the accumulated alpha value from the first sample point to the current sample point. 
-    # The cumulative product function may be useful.
-    weights = ...
+    # Calculate the alpha value for each sample point
+    alpha = raw2alpha(density, dists)  # [num_rays, num_samples]
 
-    # Calculate the expected color for each ray. rgb_map is [N_rays, 3]
-    rgb_map = ...
+    # Compute weights using cumulative product
+    T = torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1), device=alpha.device), 1. - alpha + 1e-10], dim=-1), dim=-1)[:, :-1]
+    weights = alpha * T  # [num_rays, num_samples]
 
-    # Calculate the expected depth for each ray. depth_map is [N_rays]
-    depth_map = ...
+    # Calculate the expected color for each ray
+    rgb_map = torch.sum(weights[..., None] * rgb, dim=-2)  # [num_rays, 3]
+
+    # Calculate the expected depth for each ray
+    depth_map = torch.sum(weights * z_vals, dim=-1)  # [num_rays]
 
     return rgb_map, depth_map, weights
 
