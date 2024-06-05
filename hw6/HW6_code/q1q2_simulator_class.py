@@ -9,8 +9,8 @@ class QuadrotorSimulator:
     # A simulator for the quadrotor dynamics and sensor measurements
 
     def __init__(self, sensor,
-                 q_mat= np.identity(2), 
-                 r_mat = 9 * np.identity(2), 
+                 q_mat= np.identity(2), # process noise
+                 r_mat = 9 * np.identity(2), # measurement noise covariance matrix
                  dt = 1,
                  rng_seed = 273):
         """
