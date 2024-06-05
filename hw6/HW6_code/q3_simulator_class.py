@@ -358,6 +358,11 @@ class MobileRobotSimulator:
         assert poses.ndim == 2, \
             "Data contains multiple runs. Must have 2 dimensions, " \
             f"but got {poses.ndim} dimensions."
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 6))
+        else:
+            fig = ax.figure
         
         # Plot the pose history and the sensor measurements
         fig, _ = plt.subplots(figsize=(8, 6))
